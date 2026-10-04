@@ -19,7 +19,7 @@ is why it is not the source here.
 
     ./build.py            # expects data/all.json.bz2
 """
-import bz2, html, json, os, re, subprocess, sys
+import bz2, html, json, os, re, subprocess, sys, textwrap
 from html.parser import HTMLParser
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -36,6 +36,11 @@ SKIP_CLASS = re.compile(r"ws-noexport|wst-header|wst-footer|mw-editsection|"
                         r"catlinks|navigation-not-searchable|pagenum|ws-pagenum|"
                         r"mw-references-columns|printfooter")
 SKIP_TAG = {"style", "script", "sup"}
+# no end tag ever comes for these, so they must not touch the skip depth -- a
+# <link> inside a skipped header otherwise left the parser skipping for good
+VOID = {"area","base","br","col","embed","hr","img","input","link","meta",
+        "source","track","wbr"}
+WIDTH = 72
 
 def b64(n):
     if n == 0:
@@ -77,6 +82,10 @@ class ToText(HTMLParser):
         self.stack = []
 
     def handle_starttag(self, tag, attrs):
+        if tag in VOID:
+            if not self.skip and tag in BLOCK:
+                self.out.append("\n")
+            return
         a = dict(attrs)
         skipping = tag in SKIP_TAG or SKIP_CLASS.search(a.get("class", "") or "")
         if self.skip:
@@ -88,6 +97,8 @@ class ToText(HTMLParser):
         self.stack.append(tag)
 
     def handle_endtag(self, tag):
+        if tag in VOID:
+            return
         if self.stack:
             self.stack.pop()
         if self.skip:
@@ -115,7 +126,12 @@ class ToText(HTMLParser):
         s = s.replace("\n", " ")
         s = s.replace("\x00", "\n\n")
         s = re.sub(r"[ \t]+", " ", s)
-        return s.strip()
+        # ...and wrap again at a fixed width.  The `dict` client keeps only the
+        # last ~2 KB of a longer line, so one-line paragraphs lost their openings.
+        # britannica.el joins these lines back up, so Emacs still reflows.
+        return "\n\n".join(textwrap.fill(p, WIDTH, break_long_words=False,
+                                           break_on_hyphens=False)
+                             for p in s.strip().split("\n\n"))
 
 def to_text(h):
     p = ToText()
@@ -123,8 +139,14 @@ def to_text(h):
     p.close()
     return p.text()
 
-def records(path):
-    skipped = {"volume index": 0, "root": 0, "odd title": 0, "empty": 0}
+REDIRECT = re.compile(r'class="redirectText".*?title="([^"]*)"', re.S)
+
+def records(path, aliases):
+    """Yield (headword, body).  Redirects are not articles: one into EB1911 goes
+    into ALIASES as {alias: target}; one out of it (\"Boston\" -> the Wikisource
+    disambiguation page) is dropped, or it shadows the real Boston articles."""
+    skipped = {"volume index": 0, "root": 0, "odd title": 0, "empty": 0,
+               "redirect out of EB1911": 0}
     with bz2.open(path, "rt", encoding="utf8") as f:
         for line in f:
             d = json.loads(line)
@@ -136,7 +158,16 @@ def records(path):
             title = page[len(PREFIX):]
             if re.match(r"^Vol(ume)? \d+", title):
                 skipped["volume index"] += 1; continue
-            body = to_text(d.get("content") or "")
+            content = d.get("content") or ""
+            if "redirectMsg" in content:
+                m = REDIRECT.search(content)
+                target = html.unescape(m.group(1)) if m else ""
+                if target.startswith(PREFIX) and "/" not in title:
+                    aliases[title.strip()] = target[len(PREFIX):].strip()
+                else:
+                    skipped["redirect out of EB1911"] += 1
+                continue
+            body = to_text(content)
             if len(body) < 20:
                 skipped["empty"] += 1; continue
             if "/" in title:                      # a section of a long article
@@ -170,9 +201,19 @@ def main():
             "     https://github.com/dcampos/eb1911 (rebuilt weekly).\n"
             "     Proofread transcription, not OCR.\n")
         n = 0
-        for head, body in records(SRC):
+        aliases = {}
+        for head, body in records(SRC, aliases):
             put(head, head + "\n" + "\n".join(("  " + l) if l else "" for l in body.split("\n")) + "\n")
             n += 1
+    # an alias is just a second index line pointing at the target's text
+    where = {w: (off, ln) for w, off, ln in index}
+    heads = set(where)
+    a = 0
+    for alias, target in aliases.items():
+        if alias not in heads and target in where:
+            index.append((alias, *where[target]))
+            a += 1
+    print(f"  {a} redirects kept as aliases ({len(aliases) - a} dangling or shadowed)")
     index.sort(key=lambda r: sort_key(r[0]))
     with open(idx_path, "w", encoding="utf8") as f:
         for word, off, ln in index:

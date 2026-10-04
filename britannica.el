@@ -18,7 +18,7 @@
 (require 'url-util)
 (require 'thingatpt)
 
-(defconst britannica-version "0.4")
+(defconst britannica-version "0.5")
 
 (defgroup britannica nil "1911 Encyclopaedia Britannica." :group 'applications)
 
@@ -57,13 +57,21 @@
       (and (eq code 0) (> (buffer-size) 0) (buffer-string)))))
 
 (defun britannica--strip (raw title)
-  "Drop dict\'s header lines, the two-space indent, and the repeated TITLE."
+  "Drop dict\'s header lines, the two-space indent, and the repeated TITLE.
+Only the first definition is kept, and the database's fixed-width lines
+are joined back into paragraphs so `visual-line-mode' can reflow them."
   (let* ((lines (split-string raw "\n"))
-         (start (or (cl-position-if (lambda (l) (string-prefix-p "From " l)) lines) -1))
+         (from-p (lambda (l) (string-prefix-p "From " l)))
+         (start (or (cl-position-if from-p lines) -1))
          (body (nthcdr (1+ start) lines))
+         (end (cl-position-if from-p body))
+         (body (if end (cl-subseq body 0 end) body))
          (text (string-trim
                 (mapconcat (lambda (l) (if (string-prefix-p "  " l) (substring l 2) l))
-                           body "\n"))))
+                           body "\n")))
+         ;; the build wraps at 72 columns because the dict client truncates
+         ;; long lines; a single newline is a wrap, a blank line a paragraph
+         (text (replace-regexp-in-string "\\([^\n]\\)\n[ \t]*\\([^\n \t]\\)" "\\1 \\2" text)))
     ;; the entry itself begins with its headword; the buffer already has it
     (if (and title (string-prefix-p (downcase title) (downcase text)))
         (string-trim (substring text (length title)))
@@ -74,8 +82,10 @@
 Multi-word matches are quoted, single words are bare -- so Épernay comes back
 unquoted and a quotes-only parser misses exactly the entries that need this."
   (let (res)
+    ;; dict wraps a long match list: the first line is "db:  ...", the rest
+    ;; are continuation lines indented under it, and they count too
     (dolist (line (split-string out "\n" t))
-      (when (string-match "\\`[^ \t:]+: *\\(.*\\)\\'" line)
+      (when (string-match "\\`\\(?:[^ \t:]+:\\|[ \t]\\) *\\(.*\\)\\'" line)
         (let ((rest (match-string 1 line)) (pos 0))
           (while (string-match "\"\\([^\"]+\\)\"\\|\\([^ \t]+\\)" rest pos)
             (push (or (match-string 1 rest) (match-string 2 rest)) res)
@@ -95,6 +105,11 @@ any is retried with them removed: Épernay is found by searching pernay."
                   (when (eq 0 (apply #'call-process britannica-dict-program nil t nil
                                      (britannica--args "-m" "-s" strategy "--" q)))
                     (britannica--parse-matches (buffer-string))))))
+         ;; "William Bradford" is filed as "Bradford, William (governor)"
+         (words (split-string term))
+         (inverted (and (cdr words) (not (string-match-p "," term))
+                        (concat (car (last words)) ", "
+                                (string-join (butlast words) " "))))
          (ascii (replace-regexp-in-string "[^[:ascii:]]" "" term))
          (alt (and (not (string= ascii term)) (not (string-empty-p ascii)) ascii)))
     ;; prefix first: it is the binary search, and for "Kant" it offers
@@ -102,6 +117,7 @@ any is retried with them removed: Épernay is found by searching pernay."
     ;; substring second: a linear scan, so it is the one that still works where
     ;; our index order and dictd's disagree.
     (or (funcall try "prefix" term)
+        (and inverted (funcall try "prefix" inverted))
         (funcall try "substring" term)
         (and alt (funcall try "prefix" alt))
         (and alt (funcall try "substring" alt)))))
