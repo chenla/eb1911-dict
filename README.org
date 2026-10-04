@@ -1,0 +1,121 @@
+#+TITLE: EB1911 — the 1911 Encyclopaedia Britannica in Emacs
+#+OPTIONS: toc:nil
+
+The Encyclopaedia Britannica, Eleventh Edition (1910–11) as a dictd database, with
+a reader built for articles rather than definitions. =H-b= on a word.
+
+Public domain, and a fixed snapshot of an educated world-model in 1911 — which is
+the reason for having it, beyond the prose.
+
+* Where the text comes from
+
+Not Project Gutenberg: *its transcription stalled at M*, around 2013 — 130
+alphabetical slices, A–M, the last being ebook 43060 (“McKinley, William” to
+“Magnetism, Terrestrial”). Searches for Shakespeare, Napoleon, Zoology all return
+nothing.
+
+Not the Wikimedia dump either. EB1911 articles in Wikisource's main namespace are
+only transclusion stubs —
+
+: <pages index="EB1911 - Volume 25.djvu" from="1088" to="1088" ... />
+
+— with the text in the =Page:= namespace, and =prop=extracts= returns *zero*
+characters for them.
+
+[[https://github.com/dcampos/eb1911][dcampos/eb1911]] already resolves all of
+that and publishes =all.json.bz2= — the complete Wikisource transcription rendered
+to HTML, 39,288 records, rebuilt weekly. Wikisource has ~37,400 of the edition's
+~40,000 articles, *proofread rather than OCR'd*, so it is cleaner than the Century
+Dictionary text.
+
+* Build and install
+
+#+begin_src sh
+./fetch-data.sh        # 82 MB
+./build.py             # 38,761 articles -> eb1911.dict.dz (96 MB) + .index
+sudo bash ./install.sh # /usr/local/share/dictd + a stanza in dictd.conf
+#+end_src
+
+#+begin_src elisp
+(add-to-list 'load-path "~/proj/britannica")
+(autoload 'britannica "britannica" nil t)
+(global-set-key (kbd "H-b") #'britannica)
+(setq dictionary-default-dictionary "words")   ; see below
+#+end_src
+
+* Keeping it out of ordinary word lookups
+
+A Century entry is a screenful; =China= in Britannica runs to pages. With
+=dictionary-default-dictionary= set to =*=, every =H-w= would drag the
+encyclopaedia along.
+
+dictd's =invisible= keyword looks like the answer and is not: it hides the
+database from =SHOW DB= and from =*=, but also from =DEFINE=, so it is only usable
+underneath a virtual database — and the *virtual* database is then visible to =*=
+again, so nothing is gained.
+
+What works is the other direction: define a virtual database of the short
+dictionaries and point Emacs at that.
+
+: database_virtual words { database_list "gcide,wn,foldoc,jargon,devil,elements,century" }
+
+=H-w= searches =words=; =H-b= asks =eb1911= by name. =install.sh= generates the
+list from whatever =dict -D= reports, so it picks up any dictionaries added later.
+
+Note it installs to =/usr/local/share/dictd=, not =/usr/share/dictd=: Debian's
+=dictdconfig= rescans the latter and regenerates =db.list= on every =dict-*=
+package install, which would overwrite an annotated stanza.
+
+* Looking things up the way a person types
+
+EB1911 titles biographies “Surname, Forename”, so exact match is the wrong
+default: =Longinus= is filed as =Longinus, Cassius=. =britannica--resolve= tries
+exact, then *prefix*, then *substring*, and repeats both with non-ASCII characters
+stripped.
+
+Order matters. For =Kant=, prefix offers =Kant, Immanuel= while substring offers
+assorted Kantakouzenoses — so prefix first. But substring is a linear scan and so
+reaches the accented headwords that prefix cannot (see below), hence both.
+
+When several match, the default offered is the exact title, else the first match
+*beginning with* what was typed — otherwise =Kant= defaults to =Kantakouzenos=.
+
+* dictd's index collation, which is not documented
+
+dictd binary-searches the =.index=, so it must be sorted exactly as dictd
+compares. Determined by experiment, sorting the same data several ways and
+counting successful exact lookups:
+
+| key                                            | result |
+|------------------------------------------------+--------|
+| fold case, strip all non-alphanumerics          | ~6%    |
+| fold case, strip punctuation, keep spaces       | 277/300 |
+| fold ASCII case, strip ASCII punctuation, keep spaces *and non-ASCII bytes* | *296/300* |
+
+=LC_ALL=C sort -df= is close but wrong: =-d= drops accented letters, so
+“Vígfússon” sorts before “Vigil”, while dictd keeps the UTF-8 bytes and =0xC3 >
+'i'= puts it after. A single mis-sorted neighbour makes the binary search miss.
+
+The residue is the ~93 headwords beginning with a non-ASCII character, plus a few
+with internal accents: dictd evidently drops those characters when comparing, so
+=pernay= finds =Épernay= but =Épernay= does not. The substring fallback covers
+them, which is why it is in the chain.
+
+* Reading, not glancing
+
+=dictionary-mode= is right for definitions and wrong for articles, so
+=britannica-mode= is its own buffer: soft-wrapped to the window, with
+
+| =RET= | follow the cross-reference at point — 1911's hyperlinks were “(q.v.)” |
+| =l=   | back, through the history of what you followed |
+| =w=   | the Wikisource page: scans, footnotes, plates |
+| =q=   | quit |
+
+* Notes
+
+- =dict -m= quotes multi-word matches and leaves single words bare, so a parser
+  that only reads quoted strings misses exactly the single-word entries.
+- dictd needs an *absolute* =-c= path; it chdirs before reading its config.
+- dictd rewrites its argv to =dictd 1.13.0: 1/204=, so =pkill -f "dictd -c ..."=
+  matches nothing, a stale instance keeps the port, and a rebuild appears to
+  change nothing. Use =pkill -u "$(id -un)" -x dictd=, which spares the system one.

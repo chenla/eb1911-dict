@@ -1,0 +1,9 @@
+data/
+eb1911.dict
+eb1911.dict.dz
+eb1911.index
+test.conf
+test.pid
+test.log
+*.elc
+__pycache__/
