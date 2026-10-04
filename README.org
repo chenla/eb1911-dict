@@ -32,7 +32,7 @@ Dictionary text.
 
 #+begin_src sh
 ./fetch-data.sh        # 82 MB
-./build.py             # 38,761 articles -> eb1911.dict.dz (96 MB) + .index
+./build.py             # 37,161 articles + 1,444 aliases -> eb1911.dict.dz (97 MB) + .index
 sudo bash ./install.sh # /usr/local/share/dictd + a stanza in dictd.conf
 #+end_src
 
@@ -71,7 +71,12 @@ package install, which would overwrite an annotated stanza.
 EB1911 titles biographies “Surname, Forename”, so exact match is the wrong
 default: =Longinus= is filed as =Longinus, Cassius=. =britannica--resolve= tries
 exact, then *prefix*, then *substring*, and repeats both with non-ASCII characters
-stripped.
+stripped. A name typed forename-first is also tried inverted, so =William
+Bradford= reaches =Bradford, William (governor)=.
+
+Titles carry Wikisource's disambiguators — =Boston (Massachusetts)=,
+=Bradford (Yorkshire)= — so a bare =Boston= is deliberately *not* an article: it
+falls through to prefix and offers all of them.
 
 Order matters. For =Kant=, prefix offers =Kant, Immanuel= while substring offers
 assorted Kantakouzenoses — so prefix first. But substring is a linear scan and so
@@ -112,6 +117,17 @@ them, which is why it is in the chain.
 | =q=   | quit |
 
 * Notes
+
+- *The =dict= client keeps only the last ~2 KB of a line.* The server sends it
+  whole; the client drops the front. One-line paragraphs therefore lost their
+  openings — Boston began mid-sentence. The build wraps at 72 columns and
+  =britannica.el= joins the lines back up, so the buffer still reflows.
+- Wikisource redirects are not articles. One into EB1911 (=1st Marquess of
+  Ripon=) becomes a second index line pointing at the target's text; one out of
+  it (=Boston= → the general disambiguation page) is dropped, or it shadows the
+  real articles with a stub that says only “Redirect to: Boston”.
+- =dict -m= wraps a long match list onto indented continuation lines; read only
+  the first and =Boston (Massachusetts)= is invisible.
 
 - =dict -m= quotes multi-word matches and leaves single words bare, so a parser
   that only reads quoted strings misses exactly the single-word entries.
