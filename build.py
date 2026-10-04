@@ -105,6 +105,16 @@ class ToText(HTMLParser):
         s = re.sub(r"[ \t]+", " ", s)
         s = re.sub(r" ?\n ?", "\n", s)
         s = re.sub(r"\n{3,}", "\n\n", s)
+        # Unwrap.  The transcription keeps one newline per printed line of the
+        # scan, so paragraphs arrive broken at about 60 columns; left alone the
+        # reader wraps them again and the result is ragged.  A single newline is
+        # therefore a line of type, not a paragraph break, and gets joined;
+        # blank lines are kept.  (Verse and tables lose their shape -- the trade
+        # for prose that reflows to any window width.)
+        s = re.sub(r"\n{2,}", "\x00", s)
+        s = s.replace("\n", " ")
+        s = s.replace("\x00", "\n\n")
+        s = re.sub(r"[ \t]+", " ", s)
         return s.strip()
 
 def to_text(h):
@@ -161,7 +171,7 @@ def main():
             "     Proofread transcription, not OCR.\n")
         n = 0
         for head, body in records(SRC):
-            put(head, head + "\n" + "\n".join("  " + l for l in body.split("\n")) + "\n")
+            put(head, head + "\n" + "\n".join(("  " + l) if l else "" for l in body.split("\n")) + "\n")
             n += 1
     index.sort(key=lambda r: sort_key(r[0]))
     with open(idx_path, "w", encoding="utf8") as f:
